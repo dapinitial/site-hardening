@@ -92,3 +92,65 @@ const server = createServer((req, res) => {
   `grep -rE "sb_secret_|service_role" dist/ .next/static/ 2>/dev/null`.
 - If a server-side insert can fail, make the form say so. A form that shows success on failure
   loses sign-ups silently when the project moves or is paused.
+
+## The forensic log and alerts (any stack)
+
+```js
+import { attemptRow, spikeAlert, formToken, honeypotFilled, requestLooksForged, looksLikeBot, limited, HOUR } from './shield.mjs';
+import { Blocklist } from './blocklist.mjs';
+
+const block = new Blocklist({ url: process.env.BLOCKLIST_URL });
+const token = formToken(process.env.FORM_SECRET);
+const alerts = spikeAlert({ thresholds: { dropped: 30, accepted: 8 }, send: (kind, n, d) => mailOwner(`${n} ${kind} in the last hour`, d) });
+
+async function intake(req, body) {
+  const drop = (why) => {
+    void db.from('attempts').insert(attemptRow(req, { site: 'example.com', form: '/api/intake', body, reason: why, secret: process.env.FORM_SECRET }));
+    void alerts.note('dropped', why);
+    return json({ ok: true });                       // a bot learns nothing
+  };
+  const ip = clientIp(req);
+  if (block.has(ip)) return drop('blocked range');
+  if (honeypotFilled(body)) return drop('honeypot');
+  const forged = requestLooksForged(req); if (forged) return drop(forged);
+  const tok = token.verify(body.t); if (!tok.ok) return drop(tok.why);
+  const bot = looksLikeBot(body); if (bot) return drop(bot);
+  if (limited('intake:' + ip, 3, HOUR) || limited('intake:*', 20, HOUR)) return drop('rate');
+  // …store the lead, then:
+  void db.from('attempts').insert(attemptRow(req, { site: 'example.com', form: '/api/intake', body, reason: 'accepted', secret: process.env.FORM_SECRET }));
+  void alerts.note('accepted', body.email);
+}
+```
+
+Mint the token where the form renders (`token.mint()` into a hidden field named `t`).
+
+## Paid models
+
+```js
+import { tierBudget } from './shield.mjs';
+const MODELS = { default: 'claude-haiku-5-5', premium: 'claude-sonnet-5-5' };   // the server owns this map
+const ai = tierBudget({ default: Number(process.env.CHAT_DAILY_CAP || 500), premium: Number(process.env.CHAT_PREMIUM_DAILY_CAP || 40) },
+  { onWarn: (tier, used, cap) => mailOwner(`chat ${tier} at ${used}/${cap} today`) });
+const tier = ai.pick(body.tier);
+if (!tier) return json({ error: 'Taken a lot of calls today. Try tomorrow.' }, 429);
+const model = MODELS[tier];
+```
+
+## The live check in Shipmate's sentinel
+
+The sentinel already probes every project's `health_url` every five minutes. Add a `security`
+block to the project's `.shipmate.yml`:
+
+```yaml
+security:
+  form: /api/contact
+  resolve: rrayjhtbzeyaglpfijfj.supabase.co
+  mail: example.com
+  embed: /embed
+```
+
+and a `security` check in `sentinel.sh` that runs
+`node ~/.claude/skills/site-hardening/assets/check.mjs "$url" --json` with those flags and reports
+each `ok: false` result as a problem that just opened, the way the `site` check does. Leave
+`--limits` out of the timer; run it by hand after a deploy. Until the sentinel carries it, a
+weekly run by hand across every live domain is the floor.

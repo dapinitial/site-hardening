@@ -175,6 +175,93 @@ export function looksLikeBot({ name = '', company = '', message = '' } = {}) {
   return null;
 }
 
+/* ------------------------------------------------------------------ spending tiers */
+
+/** Paid models, APIs, anything a visitor can make you spend on. Model choice stays on the server:
+ * the request names a tier, each tier has its own rolling daily cap, and a tier past its cap
+ * falls back to the default instead of failing. `onWarn` fires once per tier per day at 80 %.
+ *   const ai = tierBudget({ default: 500, premium: 40 }, { onWarn });
+ *   const tier = ai.pick(body.tier);   // 'premium' while there is budget, else 'default' */
+export function tierBudget(caps, { windowMs = DAY, onWarn = null } = {}) {
+  const b = Object.fromEntries(Object.entries(caps).map(([k, cap]) => [k, { cap, draws: [], warned: 0 }]));
+  const used = (t, now) => { while (t.draws.length && now - t.draws[0] > windowMs) t.draws.shift(); return t.draws.length; };
+  const take = (name, now) => {
+    const t = b[name]; if (!t) return false;
+    const n = used(t, now);
+    if (n >= t.cap) return false;
+    t.draws.push(now);
+    if (onWarn && n + 1 >= Math.ceil(t.cap * 0.8) && (t.warned === 0 || now - t.warned > windowMs)) { t.warned = now; onWarn(name, n + 1, t.cap); }
+    return true;
+  };
+  return {
+    pick(requested, now = Date.now()) {
+      const name = requested && b[requested] ? requested : 'default';
+      if (name !== 'default' && take(name, now)) return name;
+      return take('default', now) ? 'default' : null;   // null: even the default is spent, answer 429
+    },
+    used: (name, now = Date.now()) => (b[name] ? used(b[name], now) : 0),
+  };
+}
+
+/* ------------------------------------------------------------------ forensic log + spike alerts */
+
+const KEEP_HEADERS = ['accept', 'accept-language', 'accept-encoding', 'content-type', 'content-length', 'origin', 'referer',
+  'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'sec-fetch-site', 'sec-fetch-mode', 'sec-fetch-dest',
+  'upgrade-insecure-requests', 'dnt', 'via', 'x-requested-with', 'cache-control', 'pragma', 'te', 'priority'];
+const ADDRESS_HEADERS = ['cf-connecting-ip', 'do-connecting-ip', 'x-forwarded-for', 'true-client-ip', 'x-real-ip'];
+
+/** One row for the attempts table (assets/attempts.sql). Pass the parsed body and the reason the
+ * gate gave ('accepted' when it passed). The typed address is hashed with `secret`, never stored.
+ *   void db.from('attempts').insert(attemptRow(req, { site, form, body, reason, secret })) */
+export function attemptRow(req, { site, form, body = {}, reason, secret, emailField = 'email', tokenField = 't', pow = 'off', socketAddress } = {}) {
+  const get = headersOf(req);
+  const headers = {};
+  for (const k of KEEP_HEADERS) { const v = get(k); if (v) headers[k] = String(v).slice(0, 300); }
+  const order = [];
+  const raw = req?.headers;
+  if (raw && typeof raw.forEach === 'function') raw.forEach((_, k) => { if (!/^(x-forwarded|cf-|do-|x-real|true-client)/.test(k)) order.push(k); });
+  else if (raw) for (const k of Object.keys(raw)) if (!/^(x-forwarded|cf-|do-|x-real|true-client)/.test(k)) order.push(k);
+  const email = typeof body[emailField] === 'string' ? body[emailField].trim().toLowerCase() : '';
+  const at = email.lastIndexOf('@');
+  const ts = typeof body[tokenField] === 'string' ? Number(body[tokenField].split('.')[0]) : NaN;
+  const len = (v) => (typeof v === 'string' ? v.length : v == null ? null : -1);
+  const shape = { fields: Object.keys(body).slice(0, 30) };
+  for (const [k, v] of Object.entries(body)) if (k !== emailField && k !== tokenField) shape[`${k}_len`] = len(v);
+  shape.honeypot = ['website', 'company', 'url'].some((k) => typeof body[k] === 'string' && body[k].length > 0 && k !== 'company') || false;
+  return {
+    site, form, reason,
+    ip: clientIp(req, socketAddress),
+    ip_diag: ADDRESS_HEADERS.map((h) => { const v = get(h); return v ? `${h}=${v}` : null; }).filter(Boolean).join(' '),
+    ua: (get('user-agent') ?? '').slice(0, 400) || null,
+    headers, header_order: order.slice(0, 40),
+    token_age_s: Number.isFinite(ts) ? Math.round((Date.now() - ts) / 100) / 10 : null,
+    pow, shape,
+    victim_hash: email && secret ? hashFor(secret, email) : null,
+    victim_domain: at > 0 ? email.slice(at + 1).slice(0, 120) : null,
+  };
+}
+
+/** Spike alerts: `note(kind)` counts events per kind in a rolling window; when a kind crosses its
+ * threshold, `send(kind, count, detail)` fires once, then stays silent for `silenceMs`. The owner
+ * hears about a new botnet range inside the hour and never gets a flooded inbox.
+ *   const alerts = spikeAlert({ thresholds: { dropped: 30, accepted: 8 }, send });
+ *   alerts.note('dropped', `${why} from ${ip}`); */
+export function spikeAlert({ thresholds, windowMs = HOUR, silenceMs = 6 * HOUR, send }) {
+  const events = new Map(), last = new Map();
+  return {
+    async note(kind, detail = '', now = Date.now()) {
+      const arr = (events.get(kind) ?? []).filter((t) => now - t < windowMs);
+      arr.push(now); events.set(kind, arr);
+      const max = thresholds[kind];
+      if (!max || arr.length < max) return false;
+      if (last.has(kind) && now - last.get(kind) < silenceMs) return false;
+      last.set(kind, now);
+      await send(kind, arr.length, detail);
+      return true;
+    },
+  };
+}
+
 /* ------------------------------------------------------------------ the relay rule */
 
 /** Mail to an address the sender typed is mail to a stranger until that address is verified.

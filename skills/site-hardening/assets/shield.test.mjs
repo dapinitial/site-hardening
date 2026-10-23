@@ -74,3 +74,56 @@ test('bot signals', () => {
   assert.equal(looksLikeBot({ message: 'asdkjhqwkejhqwkjehqwkjeh' }), 'one unbroken token');
   assert.equal(looksLikeBot({ name: 'Ana', message: 'We need a new site for our bakery.' }), null);
 });
+
+import { tierBudget, spikeAlert, attemptRow } from './shield.mjs';
+import { Blocklist } from './blocklist.mjs';
+
+test('tierBudget: premium falls back to default when spent, warns once at 80%', () => {
+  const warns = [];
+  const ai = tierBudget({ default: 10, premium: 5 }, { windowMs: 1000, onWarn: (n, used, cap) => warns.push(`${n}:${used}/${cap}`) });
+  const picks = []; for (let i = 0; i < 7; i++) picks.push(ai.pick('premium', 100 + i));
+  assert.deepEqual(picks, ['premium', 'premium', 'premium', 'premium', 'premium', 'default', 'default']);
+  assert.deepEqual(warns, ['premium:4/5']);
+  assert.equal(ai.pick('nonsense', 200), 'default');
+  for (let i = 0; i < 10; i++) ai.pick(undefined, 300 + i);
+  assert.equal(ai.pick(undefined, 320), null);
+  assert.equal(ai.pick(undefined, 2000), 'default');
+});
+
+test('spikeAlert fires once at the threshold, then stays silent', async () => {
+  const sent = [];
+  const a = spikeAlert({ thresholds: { dropped: 3 }, windowMs: 1000, silenceMs: 5000, send: async (k, n, d) => sent.push(`${k} ${n} ${d}`) });
+  for (let i = 0; i < 6; i++) await a.note('dropped', 'x', 100 + i);
+  assert.deepEqual(sent, ['dropped 3 x']);
+  await a.note('dropped', 'later', 7000);
+  assert.equal(sent.length, 1);               // under the threshold again after the window
+  for (let i = 0; i < 3; i++) await a.note('dropped', 'again', 7001 + i);
+  assert.equal(sent.length, 2);
+});
+
+test('attemptRow hashes the address and keeps only allowlisted headers', () => {
+  const r = new Request('http://x/api/intake', { method: 'POST', headers: { 'user-agent': 'UA', 'accept-language': 'en', 'x-forwarded-for': '6.6.6.6, 1.2.3.4, 10.0.0.1', cookie: 'secret=1' } });
+  const row = attemptRow(r, { site: 's', form: '/api/intake', body: { name: 'Bob', email: 'Target@Example.COM', website: 'spam', t: `${Date.now() - 5000}.sig` }, reason: 'honeypot', secret: 'k' });
+  assert.equal(row.ip, '1.2.3.4');
+  assert.equal(row.victim_domain, 'example.com');
+  assert.equal(row.victim_hash.length, 24);
+  assert.equal(row.headers.cookie, undefined);
+  assert.equal(row.shape.honeypot, true);
+  assert.ok(row.token_age_s >= 4.9 && row.token_age_s < 7);
+  assert.ok(!JSON.stringify(row).includes('target@'));
+});
+
+test('blocklist matches v4 and v6 CIDRs and keeps the known-bad ranges', async () => {
+  const b = new Blocklist({ ranges: ['10.1.0.0/16', '2001:db8::/32'] });
+  assert.equal(b.has('95.134.17.9'), true);
+  assert.equal(b.has('95.134.20.1'), false);
+  assert.equal(b.has('10.1.200.3'), true);
+  assert.equal(b.has('2001:db8:1::5'), true);
+  assert.equal(b.has('2001:db9::1'), false);
+  assert.equal(b.has('garbage'), false);
+  const shared = new Blocklist({ url: 'https://list.example/x.json', fetchImpl: async () => ({ ok: true, json: async () => ['198.51.100.0/24'] }) });
+  await shared.refresh();
+  assert.equal(shared.has('198.51.100.7'), true);
+  assert.equal(shared.has('95.134.17.9'), true);
+  shared.stop();
+});
