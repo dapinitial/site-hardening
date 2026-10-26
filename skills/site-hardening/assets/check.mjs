@@ -49,8 +49,10 @@ const get = async (path, init = {}) => {
       'permissions-policy': (v) => v.length > 0,
     };
     for (const [k, test] of Object.entries(want)) { const v = h.get(k); add(`header ${k}`, !!v && test(v), v ?? 'missing'); }
-    const csp = h.get('content-security-policy');
-    add('header content-security-policy', !!csp, csp ? csp.slice(0, 80) + (csp.length > 80 ? '…' : '') : 'missing (a meta CSP on the page is the fallback)');
+    // report-only counts: it is step 1 of the procedure, and it must run for a week without nagging
+    const enforced = h.get('content-security-policy'); const reportOnly = h.get('content-security-policy-report-only');
+    const csp = enforced ?? reportOnly;
+    add('header content-security-policy', !!csp, csp ? (enforced ? '' : 'report-only: ') + csp.slice(0, 80) + (csp.length > 80 ? '…' : '') : 'missing (a meta CSP on the page is the fallback)');
     const xfo = h.get('x-frame-options'); const fa = csp && /frame-ancestors/.test(csp);
     add('framing', !!xfo || !!fa, xfo ?? (fa ? 'frame-ancestors in CSP' : 'neither X-Frame-Options nor frame-ancestors'));
     const disclose = ['x-powered-by', 'x-aspnet-version'].filter((k) => h.get(k)).map((k) => `${k}: ${h.get(k)}`);
