@@ -37,10 +37,13 @@ const get = async (path, init = {}) => {
 
 // ---- headers ----------------------------------------------------------------------------
 {
-  const res = await get('/');
+  // Follow redirects: a bare domain that 301s to www carries no headers of its own, and the
+  // headers that matter are the ones on the page a visitor lands on.
+  const res = await get('/', { redirect: 'follow' });
   if (res.status === 0) add('reachable', false, res.error);
   else {
-    add('reachable', res.status < 500, `${res.status}`);
+    const landed = res.url && res.url !== new URL('/', base).href ? ` (landed on ${res.url})` : '';
+    add('reachable', res.status < 500, `${res.status}${landed}`);
     const h = res.headers;
     const want = {
       'strict-transport-security': (v) => /max-age=\d{6,}/.test(v),
@@ -67,8 +70,11 @@ if (form) {
   const cross = await post({ origin: 'https://evil.example', 'sec-fetch-site': 'cross-site' });
   add('form refuses cross-site post', cross.status === 403, `${cross.status}`);
   const same = await post({ origin: base.origin, 'sec-fetch-site': 'same-origin' });
-  // an empty body must reach validation (400/422), or a drop that answers like success (200/204)
-  add('form reachable from our own page', [200, 204, 400, 422].includes(same.status), `${same.status}`);
+  // An empty body must get past the guard: reaching validation (400/422), a drop that answers like
+  // success (200/204), or the form's own rate limit (429) all prove that. Only a 403 here means the
+  // guard is refusing our own page. Each run spends one hit of the form's real budget, so this
+  // check is for after a deploy, not for a five-minute timer.
+  add('form reachable from our own page', [200, 204, 400, 422, 429].includes(same.status), `${same.status}${same.status === 429 ? ' (the form’s own limit; the guard let it through)' : ''}`);
   const n = Number(opt('--limits') ?? 0);
   if (n > 0) {
     const codes = [];
