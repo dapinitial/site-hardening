@@ -144,7 +144,7 @@ block to the project's `.shipmate.yml`:
 ```yaml
 security:
   form: /api/contact
-  resolve: rrayjhtbzeyaglpfijfj.supabase.co
+  resolve: your-project-ref.supabase.co
   mail: example.com
   embed: /embed
 ```
