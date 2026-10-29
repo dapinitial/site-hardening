@@ -145,6 +145,8 @@ The fleet audit on Oct 22–23 2026, so the next one knows what to look for:
 | Form showing success while saving to a dead database | spacelabforever.com waitlist |
 | DMARC left at monitor-only on a sending domain | davidpuerto.com, spacelabforever.com |
 | Waitlist written straight from the browser, welcome mailed on insert: a subscription-bombing bot's payoff (15 strangers signed up in a day, 2026-10-28) | spacelabforever.com (fixed 2026-10-29: edge function behind the gates, double opt-in) |
+| New tables invisible to the function's own role (Supabase auto-expose off): the hardened form 502'd every real sign-up and logged nothing, while bots still saw `{ok:true}` | spacelabforever.com: grant `service_role` explicitly; prove it with one real sign-up, not only bot probes |
+| A new page's inline script silently blocked by the site's own CSP (`script-src 'self'`): the confirm button did nothing | spacelabforever.com confirm page: scripts go in their own file |
 | "Authenticated" read policies with `using (true)`: any signed-in account reads every row | spacelabforever.com waitlist and events |
 
 What held, and is worth copying: unakin.com's layered intake gates and forensic log,
