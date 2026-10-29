@@ -61,7 +61,10 @@ Copy `shield.mjs` (and `blocklist.mjs`) into the project, wire it per `adapters.
    `spikeAlert` tells the owner within the hour when drops or accepts jump, then stays silent for
    six hours. The log is how an attack becomes an abuse report.
 10. **The relay rule.** Mail to an address someone typed goes to a stranger until it's verified, so
-    it carries nothing they wrote: no name, no quote, no subject from the form.
+    it carries nothing they wrote: no name, no quote, no subject from the form. Where a list
+    sign-up mails anyone, make it double opt-in, and make the confirm link open a page whose
+    *button* confirms: mail scanners (Outlook Safe Links, corporate gateways) open every link in a
+    message, so a link that confirms on a visit confirms every bot-submitted address.
 11. **Gated content stays gated.** Every asset a protected page loads checks the same cookie as the
     page, especially when a public repo lists the asset names.
 12. **Secrets out of git**, the secret key out of every browser bundle, row security on every
@@ -141,6 +144,8 @@ The fleet audit on Oct 22–23 2026, so the next one knows what to look for:
 | Public routes passing any radius to a free public API | Shotgun Detour, Panogram |
 | Form showing success while saving to a dead database | spacelabforever.com waitlist |
 | DMARC left at monitor-only on a sending domain | davidpuerto.com, spacelabforever.com |
+| Waitlist written straight from the browser, welcome mailed on insert: a subscription-bombing bot's payoff (15 strangers signed up in a day, 2026-10-28) | spacelabforever.com (fixed 2026-10-29: edge function behind the gates, double opt-in) |
+| "Authenticated" read policies with `using (true)`: any signed-in account reads every row | spacelabforever.com waitlist and events |
 
 What held, and is worth copying: unakin.com's layered intake gates and forensic log,
 portal.unakin.com's enforcing CSP with no inline scripts, Sedulous's hashed-script CSP, the comms
